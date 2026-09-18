@@ -1,0 +1,16 @@
+Backend Engineer
+
+We are hiring a Backend Engineer with Python, FastAPI, PostgreSQL, and API design experience.
+
+Must-have requirements:
+- Python
+- FastAPI
+- PostgreSQL
+- REST API design
+- 3+ years of backend engineering experience
+
+Nice-to-have requirements:
+- Redis
+- Docker
+- System design
+- Strong communication skills

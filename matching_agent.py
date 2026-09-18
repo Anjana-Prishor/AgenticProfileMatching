@@ -6,12 +6,15 @@ from typing import Any, TypedDict
 
 from langgraph.graph import END, START, StateGraph
 
+from app.services.matching import match_profiles
+
 # Import real tools from the existing projects as the required external tool layer
 try:
     import sys
 
-    fs_tools_path = Path(r"C:\Users\prish\OneDrive\Desktop\Airtribe\LLM-Powered-FileSystem-Assistant")
-    rag_path = Path(r"C:\Users\prish\OneDrive\Desktop\Airtribe\RAGBasedProfilematching")
+    project_root = Path(__file__).resolve().parent
+    fs_tools_path = project_root / "milestone1_filesystem_assistant"
+    rag_path = project_root / "milestone2_rag_profile_matching"
 
     if str(fs_tools_path) not in sys.path:
         sys.path.append(str(fs_tools_path))
@@ -60,7 +63,8 @@ def rag_search(query: str, directory: str = "./sample_resumes", limit: int = 5) 
         "results": results[:limit],
     }
 
-
+# State definition for the matching agent
+# This state is passed through the agent workflow and updated at each node.
 class MatchingAgentState(TypedDict):
     """State tracked throughout the agent lifecycle."""
 
@@ -122,6 +126,110 @@ def generate_interview_questions(candidate_id: str) -> list[str]:
         "Which technical trade-offs have you made in production systems recently?",
         "How do you handle ambiguous requirements and stakeholder alignment?",
     ]
+
+
+def parse_natural_language_query(query: str) -> dict[str, Any]:
+    """Parse natural-language user queries into structured matching filters."""
+    normalized = (query or "").lower().strip()
+    if not normalized:
+        return {"skills": [], "min_experience": 0, "comparison": False, "reason": False}
+
+    skills: list[str] = []
+    for token in ["react", "python", "fastapi", "sql", "postgresql", "redis", "javascript", "node", "docker"]:
+        if token in normalized:
+            skills.append(token)
+
+    min_experience = 0
+    match = re.search(r"(\d+)\+?\s*years?\s*(?:experience|exp)", normalized)
+    if match:
+        min_experience = int(match.group(1))
+
+    comparison = "compare" in normalized or "vs" in normalized or "top 3" in normalized
+    reason = "why" in normalized or "reason" in normalized or "rank" in normalized
+
+    return {
+        "skills": skills,
+        "min_experience": min_experience,
+        "comparison": comparison,
+        "reason": reason,
+    }
+
+
+def explain_candidate_match(candidate: dict[str, Any], target: dict[str, Any]) -> dict[str, Any]:
+    """Generate explainability for a candidate match: strengths, gaps, and suggestions."""
+    target_skills = {str(skill).lower() for skill in target.get("skills", [])}
+    candidate_skills = {str(skill).lower() for skill in candidate.get("skills", [])}
+    matched = sorted(target_skills & candidate_skills)
+    missing = sorted(target_skills - candidate_skills)
+
+    strengths = [
+        f"Strong overlap in: {', '.join(matched) if matched else 'general profile fit'}",
+        f"Experience level: {candidate.get('experience_years', 0)} years",
+    ]
+
+    suggestions = []
+    if missing:
+        suggestions.append(f"Focus on closing gaps in: {', '.join(missing[:3])}")
+    suggestions.append("Consider a technical round focused on backend system design and API trade-offs.")
+
+    return {
+        "strengths": strengths,
+        "gaps": missing,
+        "suggestions": suggestions,
+        "matched_skills": matched,
+    }
+
+
+def screen_candidates(candidates: list[dict[str, Any]], job_description: str) -> dict[str, Any]:
+    """Implement a multi-round screening flow: initial pool, deep review, final hire/no-hire recommendation."""
+    parsed = extract_requirements(job_description)
+    initial_pool = candidates[: min(10, len(candidates))]
+
+    scored = []
+    for candidate in initial_pool:
+        score = match_profiles(
+            {
+                "name": "Target",
+                "role": "Backend Engineer",
+                "experience_years": 5,
+                "skills": [skill for item in parsed.get("must_have", []) for skill in item.split() if len(item.split()) <= 3],
+                "location": None,
+                "preferences": {"remote": True},
+            },
+            candidate,
+        )
+        scored.append({**candidate, "match_score": score})
+
+    ranked = sorted(scored, key=lambda item: item["match_score"], reverse=True)
+    top_candidates = ranked[: min(3, len(ranked))]
+
+    final_candidates = []
+    for candidate in top_candidates:
+        final_candidates.append({
+            **candidate,
+            "explainability": explain_candidate_match(candidate, {
+                "skills": [skill for item in parsed.get("must_have", []) for skill in item.split() if len(item.split()) <= 3],
+            }),
+        })
+
+    if not final_candidates:
+        decision = "no_hire"
+        note = "No candidate met the minimum profile fit."
+    else:
+        best = final_candidates[0]
+        decision = "hire" if best["match_score"] >= 0.6 else "no_hire"
+        note = f"Best-fit candidate is {best['name']} with score {best['match_score']}."
+
+    return {
+        "job_requirements": parsed,
+        "initial_pool": initial_pool,
+        "deep_review": ranked,
+        "final_recommendation": {
+            "decision": decision,
+            "note": note,
+            "candidates": final_candidates,
+        },
+    }
 
 
 def parse_job_description(state: MatchingAgentState) -> MatchingAgentState:
@@ -253,6 +361,8 @@ tool_registry = {
     "extract_requirements": extract_requirements,
     "compare_candidates": compare_candidates,
     "generate_interview_questions": generate_interview_questions,
+    "parse_natural_language_query": parse_natural_language_query,
+    "screen_candidates": screen_candidates,
 }
 
 
